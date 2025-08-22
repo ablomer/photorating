@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from 'react';
+import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import type { ImageData, Rating } from './types';
 import { extractImagesFromZip, cleanupImageUrls } from './utils/zipHandler';
 import StarRating from './components/StarRating';
@@ -7,10 +7,17 @@ import ActionsDropdown from './components/ActionsDropdown';
 import ProgressRecovery from './components/ProgressRecovery';
 import SaveStatus from './components/SaveStatus';
 import Notes from './components/Notes';
+import SettingsModal from './components/SettingsModal';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useProgressManager } from './hooks/useProgressManager';
 import { reorderImagesFromSavedOrder, extractResultsFromProgress, generateRatingResults, downloadRatingResults } from './utils/progressStorage';
 import './App.css';
+
+const calculateAverage = (ratings: Rating[]): number => {
+  if (ratings.length === 0) return 0;
+  const sum = ratings.reduce((acc, rating) => acc + rating.value, 0);
+  return Math.round((sum / ratings.length) * 10) / 10; // Round to 1 decimal place
+};
 
 function App() {
   const [images, setImages] = useState<ImageData[]>([]);
@@ -25,8 +32,33 @@ function App() {
   const [isRestoreMode, setIsRestoreMode] = useState<boolean>(false);
   const [shuffleImages, setShuffleImages] = useState<boolean>(false);
   const [stagedZipFile, setStagedZipFile] = useState<File | null>(null);
+  const [minRatingFilter, setMinRatingFilter] = useState<number>(0);
+  const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false);
 
-  const currentImage = images[currentImageIndex];
+  // Create filtered images array based on minimum rating filter
+  const filteredImages = useMemo(() => {
+    if (minRatingFilter === 0) {
+      return images; // No filter, return all images
+    }
+    
+    return images.filter(image => {
+      const ratings = imageRatings[image.path] || [];
+      if (ratings.length === 0) {
+        return false; // No ratings means it doesn't meet the minimum threshold
+      }
+      const average = calculateAverage(ratings);
+      return average >= minRatingFilter;
+    });
+  }, [images, imageRatings, minRatingFilter]);
+
+  const currentImage = filteredImages[currentImageIndex];
+
+  // Reset currentImageIndex when filter changes and current index is out of bounds
+  useEffect(() => {
+    if (filteredImages.length > 0 && currentImageIndex >= filteredImages.length) {
+      setCurrentImageIndex(0);
+    }
+  }, [filteredImages.length, currentImageIndex]);
 
   // Initialize progress manager
   const {
@@ -43,12 +75,6 @@ function App() {
     imageNotes,
     zipFileName
   });
-
-  const calculateAverage = (ratings: Rating[]): number => {
-    if (ratings.length === 0) return 0;
-    const sum = ratings.reduce((acc, rating) => acc + rating.value, 0);
-    return Math.round((sum / ratings.length) * 10) / 10; // Round to 1 decimal place
-  };
 
   // Check for stored progress on app load
   useEffect(() => {
@@ -219,14 +245,14 @@ function App() {
   }, [currentImage]);
 
   const goToPrevious = useCallback(() => {
-    if (images.length === 0) return;
-    setCurrentImageIndex(prev => prev > 0 ? prev - 1 : images.length - 1);
-  }, [images.length]);
+    if (filteredImages.length === 0) return;
+    setCurrentImageIndex(prev => prev > 0 ? prev - 1 : filteredImages.length - 1);
+  }, [filteredImages.length]);
 
   const goToNext = useCallback(() => {
-    if (images.length === 0) return;
-    setCurrentImageIndex(prev => prev < images.length - 1 ? prev + 1 : 0);
-  }, [images.length]);
+    if (filteredImages.length === 0) return;
+    setCurrentImageIndex(prev => prev < filteredImages.length - 1 ? prev + 1 : 0);
+  }, [filteredImages.length]);
 
   const downloadResults = () => {
     const results = generateRatingResults(imageRatings, imageNotes, calculateAverage);
@@ -316,6 +342,14 @@ function App() {
     setError(null);
   };
 
+  const handleOpenSettings = () => {
+    setIsSettingsModalOpen(true);
+  };
+
+  const handleCloseSettings = () => {
+    setIsSettingsModalOpen(false);
+  };
+
 
 
   // Enable keyboard shortcuts when images are loaded
@@ -324,7 +358,7 @@ function App() {
     onPrevious: goToPrevious,
     onNext: goToNext,
     onDeleteLast: deleteLastRating,
-    isEnabled: images.length > 0
+    isEnabled: filteredImages.length > 0
   });
 
   const currentRatings = currentImage ? imageRatings[currentImage.path] || [] : [];
@@ -496,6 +530,29 @@ function App() {
             {isLoading && <p className="loading">Processing zip file...</p>}
             {error && <p className="error">{error}</p>}
           </div>
+                ) : filteredImages.length === 0 ? (
+          <div className="no-filtered-images">
+            <div className="filter-controls">
+              <label htmlFor="rating-filter">Min Rating:</label>
+              <select
+                id="rating-filter"
+                value={minRatingFilter}
+                onChange={(e) => setMinRatingFilter(Number(e.target.value))}
+                className="rating-filter-select"
+              >
+                <option value={0}>All images</option>
+                <option value={1}>≥ 1 star</option>
+                <option value={2}>≥ 2 stars</option>
+                <option value={3}>≥ 3 stars</option>
+                <option value={4}>≥ 4 stars</option>
+                <option value={5}>5 stars only</option>
+              </select>
+            </div>
+            <h2>No images match the current filter</h2>
+            <p>No images have an average rating of {minRatingFilter} stars or higher.</p>
+            <p>Try lowering the minimum rating filter or rate more images first.</p>
+            <p className="total-images">Total images: {images.length}</p>
+          </div>
                 ) : (
           <div className="fullscreen-interface">
             {/* Fullscreen Background Image */}
@@ -504,10 +561,10 @@ function App() {
               style={{ backgroundImage: `url(${currentImage.url})` }}
             />
 
-                        {/* Top Overlay - Image Info and Actions */}
+            {/* Top Overlay - Image Info and Actions */}
             <div className="top-overlay">
               <div className="image-info">
-                <h2>Image {currentImageIndex + 1} of {images.length}</h2>
+                <h2>Image {currentImageIndex + 1} of {filteredImages.length}{minRatingFilter > 0 && ("*")}</h2>
                 <p className="image-path">{currentImage.path}</p>
               </div>
               <div className="top-overlay-right">
@@ -519,6 +576,7 @@ function App() {
                 <ActionsDropdown
                   onDownloadResults={downloadResults}
                   onUploadNewZip={handleZipUpload}
+                  onOpenSettings={handleOpenSettings}
                   isLoading={isLoading}
                 />
               </div>
@@ -528,7 +586,7 @@ function App() {
             <button 
               onClick={goToPrevious}
               className="nav-overlay nav-left"
-              disabled={images.length <= 1}
+              disabled={filteredImages.length <= 1}
               aria-label="Previous image"
             >
               ←
@@ -536,7 +594,7 @@ function App() {
             <button 
               onClick={goToNext}
               className="nav-overlay nav-right"
-              disabled={images.length <= 1}
+              disabled={filteredImages.length <= 1}
               aria-label="Next image"
             >
               →
@@ -572,6 +630,16 @@ function App() {
           </div>
         )}
       </main>
+      
+      {/* Settings Modal */}
+      <SettingsModal
+        isOpen={isSettingsModalOpen}
+        onClose={handleCloseSettings}
+        minRatingFilter={minRatingFilter}
+        onMinRatingFilterChange={setMinRatingFilter}
+        totalImages={images.length}
+        filteredImages={filteredImages.length}
+      />
     </div>
   );
 }

@@ -3,12 +3,14 @@ import React, { useState, useRef, useEffect } from 'react';
 interface ActionsDropdownProps {
   onDownloadResults: () => void;
   onUploadNewZip: (event: React.ChangeEvent<HTMLInputElement>) => void;
+  onOpenSettings: () => void;
   isLoading: boolean;
 }
 
 const ActionsDropdown: React.FC<ActionsDropdownProps> = ({
   onDownloadResults,
   onUploadNewZip,
+  onOpenSettings,
   isLoading
 }) => {
   const [isOpen, setIsOpen] = useState(false);
@@ -38,6 +40,11 @@ const ActionsDropdown: React.FC<ActionsDropdownProps> = ({
     setIsOpen(false);
   };
 
+  const handleSettingsClick = () => {
+    onOpenSettings();
+    setIsOpen(false);
+  };
+
   return (
     <div className="actions-dropdown" ref={dropdownRef}>
       <button
@@ -64,6 +71,13 @@ const ActionsDropdown: React.FC<ActionsDropdownProps> = ({
             type="button"
           >
             Upload Different Zip
+          </button>
+          <button
+            className="dropdown-item"
+            onClick={handleSettingsClick}
+            type="button"
+          >
+            Settings
           </button>
         </div>
       )}
