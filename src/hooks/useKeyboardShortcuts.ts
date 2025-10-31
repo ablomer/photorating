@@ -6,6 +6,9 @@ interface UseKeyboardShortcutsProps {
   onNext: () => void;
   onDeleteLast: () => void;
   isEnabled: boolean;
+  // Ranking mode specific handlers
+  onRankingChoice?: (choice: 'left' | 'right') => void;
+  mode?: 'rating' | 'ranking';
 }
 
 export const useKeyboardShortcuts = ({ 
@@ -13,7 +16,9 @@ export const useKeyboardShortcuts = ({
   onPrevious, 
   onNext, 
   onDeleteLast,
-  isEnabled 
+  isEnabled,
+  onRankingChoice,
+  mode = 'rating'
 }: UseKeyboardShortcutsProps) => {
   useEffect(() => {
     if (!isEnabled) return;
@@ -25,28 +30,43 @@ export const useKeyboardShortcuts = ({
         return;
       }
 
-      switch (event.key) {
-        case '1':
-        case '2':
-        case '3':
-        case '4':
-        case '5':
-          event.preventDefault();
-          onRate(parseInt(event.key));
-          break;
-        case 'ArrowLeft':
-          event.preventDefault();
-          onPrevious();
-          break;
-        case 'ArrowRight':
-          event.preventDefault();
-          onNext();
-          break;
-        case 'Delete':
-        case 'Backspace':
-          event.preventDefault();
-          onDeleteLast();
-          break;
+      if (mode === 'ranking') {
+        // Ranking mode keyboard shortcuts
+        switch (event.key) {
+          case 'ArrowLeft':
+            event.preventDefault();
+            onRankingChoice?.('left');
+            break;
+          case 'ArrowRight':
+            event.preventDefault();
+            onRankingChoice?.('right');
+            break;
+        }
+      } else {
+        // Rating mode keyboard shortcuts (existing functionality)
+        switch (event.key) {
+          case '1':
+          case '2':
+          case '3':
+          case '4':
+          case '5':
+            event.preventDefault();
+            onRate(parseInt(event.key));
+            break;
+          case 'ArrowLeft':
+            event.preventDefault();
+            onPrevious();
+            break;
+          case 'ArrowRight':
+            event.preventDefault();
+            onNext();
+            break;
+          case 'Delete':
+          case 'Backspace':
+            event.preventDefault();
+            onDeleteLast();
+            break;
+        }
       }
     };
 
@@ -55,5 +75,5 @@ export const useKeyboardShortcuts = ({
     return () => {
       document.removeEventListener('keydown', handleKeyDown);
     };
-  }, [onRate, onPrevious, onNext, onDeleteLast, isEnabled]);
+  }, [onRate, onPrevious, onNext, onDeleteLast, isEnabled, onRankingChoice, mode]);
 };

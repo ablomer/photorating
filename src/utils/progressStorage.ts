@@ -1,6 +1,7 @@
-import type { ProgressData, StorageInfo, ImageData, Rating } from '../types';
+import type { ProgressData, StorageInfo, ImageData, Rating, RankingProgress, RankingSession } from '../types';
 
 const STORAGE_KEY = 'photorating_progress';
+const RANKING_STORAGE_KEY = 'photorating_ranking_progress';
 const SESSION_TIMEOUT = 7 * 24 * 60 * 60 * 1000; // 7 days in milliseconds
 
 /**
@@ -256,4 +257,261 @@ export const downloadRatingResults = (
   link.click();
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
+};
+
+// ===== RANKING MODE STORAGE FUNCTIONS =====
+
+/**
+ * Saves ranking progress data to localStorage
+ */
+export const saveRankingProgress = (
+  sessionId: string,
+  session: RankingSession,
+  images: ImageData[],
+  zipFileName: string
+): void => {
+  try {
+    const progressData: RankingProgress = {
+      sessionId,
+      timestamp: Date.now(),
+      zipFileName,
+      mode: 'ranking',
+      session,
+      imageMetadata: images.map(img => ({
+        path: img.path,
+        size: img.blob.size,
+        lastModified: img.blob instanceof File ? img.blob.lastModified : Date.now()
+      }))
+    };
+
+    localStorage.setItem(RANKING_STORAGE_KEY, JSON.stringify(progressData));
+  } catch (error) {
+    console.warn('Failed to save ranking progress:', error);
+  }
+};
+
+/**
+ * Loads ranking progress data from localStorage
+ */
+export const loadRankingProgress = (): RankingProgress | null => {
+  try {
+    const stored = localStorage.getItem(RANKING_STORAGE_KEY);
+    if (!stored) return null;
+
+    const progressData: RankingProgress = JSON.parse(stored);
+    
+    // Check if the stored data is not too old
+    const isExpired = Date.now() - progressData.timestamp > SESSION_TIMEOUT;
+    if (isExpired) {
+      clearRankingProgress();
+      return null;
+    }
+
+    return progressData;
+  } catch (error) {
+    console.warn('Failed to load ranking progress:', error);
+    clearRankingProgress(); // Clear corrupted data
+    return null;
+  }
+};
+
+/**
+ * Gets information about stored ranking progress without loading the full data
+ */
+export const getRankingStorageInfo = (): StorageInfo & { mode?: 'ranking'; completedComparisons?: number; totalComparisons?: number } => {
+  try {
+    const stored = localStorage.getItem(RANKING_STORAGE_KEY);
+    if (!stored) {
+      return { hasStoredProgress: false };
+    }
+
+    const progressData: RankingProgress = JSON.parse(stored);
+    
+    // Check if expired
+    const isExpired = Date.now() - progressData.timestamp > SESSION_TIMEOUT;
+    if (isExpired) {
+      clearRankingProgress();
+      return { hasStoredProgress: false };
+    }
+
+    return {
+      hasStoredProgress: true,
+      sessionId: progressData.sessionId,
+      timestamp: progressData.timestamp,
+      zipFileName: progressData.zipFileName,
+      imageCount: progressData.imageMetadata.length,
+      mode: 'ranking',
+      completedComparisons: progressData.session.completedComparisons,
+      totalComparisons: progressData.session.totalComparisons
+    };
+  } catch (error) {
+    console.warn('Failed to get ranking storage info:', error);
+    clearRankingProgress();
+    return { hasStoredProgress: false };
+  }
+};
+
+/**
+ * Clears stored ranking progress data
+ */
+export const clearRankingProgress = (): void => {
+  try {
+    localStorage.removeItem(RANKING_STORAGE_KEY);
+  } catch (error) {
+    console.warn('Failed to clear ranking progress:', error);
+  }
+};
+
+/**
+ * Validates that a restored ranking session matches current ZIP file contents
+ */
+export const validateRankingSession = (
+  storedProgress: RankingProgress,
+  currentImages: ImageData[]
+): boolean => {
+  // Check if image count matches
+  if (storedProgress.imageMetadata.length !== currentImages.length) {
+    return false;
+  }
+
+  // Check if all images match by path and size
+  return storedProgress.imageMetadata.every((stored, index) => {
+    const current = currentImages[index];
+    return stored.path === current.path && 
+           stored.size === current.blob.size;
+  });
+};
+
+/**
+ * Reorders images to match the saved ranking session order
+ */
+export const reorderImagesFromRankingSession = (
+  images: ImageData[],
+  session: RankingSession
+): ImageData[] => {
+  if (session.images.length !== images.length) {
+    console.warn('Session images length does not match current images length');
+    return images;
+  }
+
+  // Create a map for quick lookup by path
+  const imageMap = new Map<string, ImageData>();
+  images.forEach(img => imageMap.set(img.path, img));
+
+  // Reorder based on session order
+  const reorderedImages: ImageData[] = [];
+  for (const sessionImg of session.images) {
+    const image = imageMap.get(sessionImg.path);
+    if (image) {
+      reorderedImages.push(image);
+    } else {
+      console.warn(`Image not found for path: ${sessionImg.path}`);
+      // If we can't find an image, fall back to original order
+      return images;
+    }
+  }
+
+  return reorderedImages;
+};
+
+/**
+ * Generates ranking results from completed ranking session
+ * Format is compatible with rating results structure for consistency
+ */
+export const generateRankingResults = (
+  session: RankingSession
+): { [imagePath: string]: { rank: number; score: number; comparisons: number } } => {
+  if (!session.isComplete) {
+    throw new Error('Cannot generate results from incomplete ranking session');
+  }
+
+  const results: { [imagePath: string]: { rank: number; score: number; comparisons: number } } = {};
+  
+  // Create a simple scoring system based on wins/losses
+  const scores = new Map<string, number>();
+  const comparisonCounts = new Map<string, number>();
+  
+  // Initialize scores and comparison counts
+  session.images.forEach(img => {
+    scores.set(img.path, 0);
+    comparisonCounts.set(img.path, 0);
+  });
+
+  // Calculate scores based on comparisons
+  session.comparisons.forEach(comparison => {
+    const winnerPath = session.images[comparison.winnerIndex]?.path;
+    const loserPath = session.images[comparison.loserIndex]?.path;
+    
+    if (winnerPath && loserPath) {
+      scores.set(winnerPath, (scores.get(winnerPath) || 0) + 1);
+      scores.set(loserPath, (scores.get(loserPath) || 0) - 1);
+      comparisonCounts.set(winnerPath, (comparisonCounts.get(winnerPath) || 0) + 1);
+      comparisonCounts.set(loserPath, (comparisonCounts.get(loserPath) || 0) + 1);
+    }
+  });
+
+  // Sort by score and assign ranks
+  const sortedEntries = Array.from(scores.entries()).sort((a, b) => b[1] - a[1]);
+  
+  sortedEntries.forEach(([imagePath, score], index) => {
+    results[imagePath] = {
+      rank: index + 1, // 1-based ranking
+      score,
+      comparisons: comparisonCounts.get(imagePath) || 0
+    };
+  });
+
+  return results;
+};
+
+/**
+ * Downloads ranking results as JSON file with metadata
+ */
+export const downloadRankingResults = (
+  results: { [imagePath: string]: { rank: number; score: number; comparisons?: number } },
+  fileName: string = 'image-rankings.json'
+): void => {
+  // Add metadata to the results for better compatibility and context
+  const exportData = {
+    metadata: {
+      exportType: 'ranking',
+      exportDate: new Date().toISOString(),
+      totalImages: Object.keys(results).length,
+      fileName: fileName
+    },
+    results: results
+  };
+
+  const dataStr = JSON.stringify(exportData, null, 2);
+  const dataBlob = new Blob([dataStr], { type: 'application/json' });
+  const url = URL.createObjectURL(dataBlob);
+  
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
+  URL.revokeObjectURL(url);
+};
+
+/**
+ * Gets combined storage info for both rating and ranking modes
+ */
+export const getCombinedStorageInfo = (): {
+  rating: StorageInfo;
+  ranking: StorageInfo & { mode?: 'ranking'; completedComparisons?: number; totalComparisons?: number };
+} => {
+  return {
+    rating: getStorageInfo(),
+    ranking: getRankingStorageInfo()
+  };
+};
+
+/**
+ * Clears all stored progress data (both rating and ranking)
+ */
+export const clearAllProgress = (): void => {
+  clearProgress();
+  clearRankingProgress();
 };

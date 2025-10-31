@@ -46,3 +46,60 @@ export interface StorageInfo {
   imageCount?: number;
   ratedCount?: number;
 }
+
+// Ranking Mode Types
+
+export interface RankingResult {
+  image: ImageData;
+  rank: number; // 1-based ranking (1 = best)
+  score: number; // Internal scoring for tie-breaking
+}
+
+export interface Comparison {
+  id: string;
+  leftImage: ImageData;
+  rightImage: ImageData;
+  leftIndex: number;
+  rightIndex: number;
+}
+
+export interface ComparisonResult {
+  comparisonId: string;
+  winnerIndex: number;
+  loserIndex: number;
+  timestamp: number;
+}
+
+export interface RankingSession {
+  sessionId: string;
+  images: ImageData[];
+  comparisons: ComparisonResult[];
+  currentComparison: Comparison | null;
+  isComplete: boolean;
+  totalComparisons: number;
+  completedComparisons: number;
+}
+
+export interface RankingProgress {
+  sessionId: string;
+  timestamp: number;
+  zipFileName: string;
+  mode: 'ranking';
+  session: RankingSession;
+  imageMetadata: Array<{
+    path: string;
+    size: number;
+    lastModified: number;
+  }>;
+}
+
+// App Mode Types
+
+export type AppMode = 'rating' | 'ranking';
+
+// Extended Progress Data
+
+export interface ExtendedProgressData extends ProgressData {
+  mode?: AppMode;
+  rankingProgress?: RankingProgress;
+}

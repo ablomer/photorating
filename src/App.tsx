@@ -1,5 +1,5 @@
 import React, { useState, useCallback, useEffect, useMemo } from 'react';
-import type { ImageData, Rating } from './types';
+import type { ImageData, Rating, AppMode, RankingResult } from './types';
 import { extractImagesFromZip, cleanupImageUrls } from './utils/zipHandler';
 import StarRating from './components/StarRating';
 import RatingsList from './components/RatingsList';
@@ -8,9 +8,26 @@ import ProgressRecovery from './components/ProgressRecovery';
 import SaveStatus from './components/SaveStatus';
 import Notes from './components/Notes';
 import SettingsModal from './components/SettingsModal';
+import ModeSelector from './components/ModeSelector';
+import RankingInterface from './components/RankingInterface';
+import RankingResults from './components/RankingResults';
+import RankingProgressRecovery from './components/RankingProgressRecovery';
 import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 import { useProgressManager } from './hooks/useProgressManager';
-import { reorderImagesFromSavedOrder, extractResultsFromProgress, generateRatingResults, downloadRatingResults } from './utils/progressStorage';
+import { 
+  reorderImagesFromSavedOrder, 
+  extractResultsFromProgress, 
+  generateRatingResults, 
+  downloadRatingResults,
+  saveRankingProgress,
+  loadRankingProgress,
+  clearRankingProgress,
+  validateRankingSession,
+  reorderImagesFromRankingSession,
+  generateRankingResults,
+  downloadRankingResults,
+  getCombinedStorageInfo
+} from './utils/progressStorage';
 import './App.css';
 
 const calculateAverage = (ratings: Rating[]): number => {
@@ -34,6 +51,12 @@ function App() {
   const [stagedZipFile, setStagedZipFile] = useState<File | null>(null);
   const [minRatingFilter, setMinRatingFilter] = useState<number>(0);
   const [isSettingsModalOpen, setIsSettingsModalOpen] = useState<boolean>(false);
+  const [selectedMode, setSelectedMode] = useState<AppMode | null>(null);
+  const [rankingResults, setRankingResults] = useState<RankingResult[] | null>(null);
+  const [selectedRankingImageIndex, setSelectedRankingImageIndex] = useState<number>(0);
+  const [rankingStorageInfo, setRankingStorageInfo] = useState<any>(null);
+  const [showRankingProgressRecovery, setShowRankingProgressRecovery] = useState<boolean>(false);
+  const [initialRankingSession, setInitialRankingSession] = useState<any>(null);
 
   // Create filtered images array based on minimum rating filter
   const filteredImages = useMemo(() => {
@@ -78,10 +101,19 @@ function App() {
 
   // Check for stored progress on app load
   useEffect(() => {
+    const combinedInfo = getCombinedStorageInfo();
+    setRankingStorageInfo(combinedInfo.ranking);
+    
     if (storageInfo.hasStoredProgress && images.length === 0 && !isRestoreMode) {
       setShowProgressRecovery(true);
     } else {
       setShowProgressRecovery(false);
+    }
+
+    if (combinedInfo.ranking.hasStoredProgress && images.length === 0 && !isRestoreMode) {
+      setShowRankingProgressRecovery(true);
+    } else {
+      setShowRankingProgressRecovery(false);
     }
   }, [storageInfo.hasStoredProgress, images.length, isRestoreMode]);
 
@@ -113,6 +145,8 @@ function App() {
       } else {
         // Try to restore progress for the same zip file
         const progressData = await loadProgressData();
+        const rankingProgress = loadRankingProgress();
+        
         if (progressData && storageInfo.zipFileName === file.name) {
           // Reorder images to match the saved order if available
           if (progressData.imageOrder && progressData.imageOrder.length === extractedImages.length) {
@@ -121,6 +155,16 @@ function App() {
           setImageRatings(progressData.imageRatings);
           setImageNotes(progressData.imageNotes);
           setCurrentImageIndex(progressData.currentImageIndex);
+        } else if (rankingProgress && rankingProgress.zipFileName === file.name) {
+          // Restore ranking progress
+          if (validateRankingSession(rankingProgress, extractedImages)) {
+            finalImages = reorderImagesFromRankingSession(extractedImages, rankingProgress.session);
+            setInitialRankingSession(rankingProgress.session);
+            setSelectedMode('ranking');
+          } else {
+            setError('Ranking session validation failed - starting fresh');
+            clearRankingProgress();
+          }
         } else {
           setImageRatings({});
           setImageNotes({});
@@ -294,8 +338,9 @@ function App() {
     if (!file) return;
 
     // Check if this is the correct zip file for restoration
-    if (file.name !== storageInfo.zipFileName) {
-      setError(`Please upload the correct zip file: "${storageInfo.zipFileName}"`);
+    const expectedFileName = storageInfo.zipFileName || rankingStorageInfo?.zipFileName;
+    if (file.name !== expectedFileName) {
+      setError(`Please upload the correct zip file: "${expectedFileName}"`);
       return;
     }
 
@@ -318,8 +363,9 @@ function App() {
     }
 
     // Check if this is the correct zip file for restoration
-    if (zipFile.name !== storageInfo.zipFileName) {
-      setError(`Please upload the correct zip file: "${storageInfo.zipFileName}"`);
+    const expectedFileName = storageInfo.zipFileName || rankingStorageInfo?.zipFileName;
+    if (zipFile.name !== expectedFileName) {
+      setError(`Please upload the correct zip file: "${expectedFileName}"`);
       return;
     }
 
@@ -329,7 +375,7 @@ function App() {
   };
 
   const handleStartRating = async () => {
-    if (!stagedZipFile) return;
+    if (!stagedZipFile || !selectedMode) return;
 
     // Process the staged zip file
     await processZipFile(stagedZipFile, true);
@@ -339,6 +385,7 @@ function App() {
 
   const handleClearStagedFile = () => {
     setStagedZipFile(null);
+    setSelectedMode(null);
     setError(null);
   };
 
@@ -350,15 +397,76 @@ function App() {
     setIsSettingsModalOpen(false);
   };
 
+  const handleModeSelect = (mode: AppMode) => {
+    setSelectedMode(mode);
+  };
+
+  const handleRankingComplete = (rankings: RankingResult[]) => {
+    setRankingResults(rankings);
+    setSelectedRankingImageIndex(0); // Reset to first image
+    // Clear ranking progress when complete
+    clearRankingProgress();
+  };
+
+  const handleRankingProgressSave = (session: any) => {
+    if (images.length > 0 && zipFileName) {
+      saveRankingProgress(session.sessionId, session, images, zipFileName);
+    }
+  };
+
+  const handleRestoreRankingProgress = async () => {
+    setIsRestoreMode(true);
+    setShowRankingProgressRecovery(false);
+    setError(`Please upload the zip file "${rankingStorageInfo.zipFileName}" to restore your ranking progress`);
+  };
+
+  const handleDownloadRankingResults = () => {
+    const progress = loadRankingProgress();
+    if (!progress || !progress.session.isComplete) {
+      setError('No completed ranking results found to download');
+      return;
+    }
+
+    const results = generateRankingResults(progress.session);
+    const baseFileName = progress.zipFileName ? 
+      progress.zipFileName.replace('.zip', '') : 
+      'image-rankings';
+    const fileName = `${baseFileName}-ranking-results.json`;
+    
+    downloadRankingResults(results, fileName);
+  };
+
+  const handleStartNewRanking = () => {
+    clearRankingProgress();
+    setShowRankingProgressRecovery(false);
+    setInitialRankingSession(null);
+  };
+
+  const handleStartNewSession = () => {
+    // Reset all session-related state
+    setSelectedMode(null);
+    setRankingResults(null);
+    setSelectedRankingImageIndex(0);
+    setStagedZipFile(null);
+    setImages([]);
+    setImageRatings({});
+    setImageNotes({});
+    setCurrentImageIndex(0);
+    setError(null);
+    setInitialRankingSession(null);
+    clearProgressData();
+    clearRankingProgress();
+  };
 
 
-  // Enable keyboard shortcuts when images are loaded
+
+  // Enable keyboard shortcuts only in rating mode when images are loaded
   useKeyboardShortcuts({
     onRate: addRating,
     onPrevious: goToPrevious,
     onNext: goToNext,
     onDeleteLast: deleteLastRating,
-    isEnabled: filteredImages.length > 0
+    isEnabled: filteredImages.length > 0 && selectedMode === 'rating' && !rankingResults
   });
 
   const currentRatings = currentImage ? imageRatings[currentImage.path] || [] : [];
@@ -376,6 +484,17 @@ function App() {
         />
       )}
 
+      {/* Ranking Progress Recovery Banner */}
+      {showRankingProgressRecovery && rankingStorageInfo && (
+        <RankingProgressRecovery
+          storageInfo={rankingStorageInfo}
+          onRestore={handleRestoreRankingProgress}
+          onDownloadResults={rankingStorageInfo.completedComparisons === rankingStorageInfo.totalComparisons ? handleDownloadRankingResults : undefined}
+          onStartNew={handleStartNewRanking}
+          isLoading={isLoading}
+        />
+      )}
+
       {images.length === 0 && (
         <header className="app-header">
           <h1>Photo Rating App</h1>
@@ -383,11 +502,11 @@ function App() {
         </header>
       )}
 
-      <main className={`app-main ${images.length > 0 ? 'fullscreen-main' : ''}`}>
+      <main className={`app-main ${(images.length > 0 && selectedMode === 'rating') || rankingResults ? 'fullscreen-main' : ''}`}>
         {images.length === 0 ? (
           <div className="upload-section">
             {/* Show warning if there's stored progress that will be overwritten */}
-            {storageInfo.hasStoredProgress && !isRestoreMode && !stagedZipFile && (
+            {(storageInfo.hasStoredProgress || rankingStorageInfo?.hasStoredProgress) && !isRestoreMode && !stagedZipFile && (
               <div className="overwrite-warning">
                 <div className="warning-icon">⚠️</div>
                 <div className="warning-text">
@@ -431,17 +550,27 @@ function App() {
                   </label>
                 </div>
 
+                {/* Mode Selection */}
+                {!selectedMode && (
+                  <ModeSelector
+                    onModeSelect={handleModeSelect}
+                    isLoading={isLoading}
+                  />
+                )}
+
                 {/* Start button */}
-                <div className="start-section">
-                  <button
-                    onClick={handleStartRating}
-                    disabled={isLoading}
-                    className="start-button"
-                    type="button"
-                  >
-                    {isLoading ? 'Processing...' : 'Start Rating'}
-                  </button>
-                </div>
+                {selectedMode && (
+                  <div className="start-section">
+                    <button
+                      onClick={handleStartRating}
+                      disabled={isLoading}
+                      className="start-button"
+                      type="button"
+                    >
+                      {isLoading ? 'Processing...' : `Start ${selectedMode === 'rating' ? 'Rating' : 'Ranking'}`}
+                    </button>
+                  </div>
+                )}
               </div>
             ) : (
               <>
@@ -457,7 +586,7 @@ function App() {
                     <div className="upload-text">
                       {isRestoreMode ? (
                         <>
-                          <strong>Upload "{storageInfo.zipFileName}" to restore</strong>
+                          <strong>Upload "{storageInfo.zipFileName || rankingStorageInfo?.zipFileName}" to restore</strong>
                           <br />
                           Your progress will be restored
                         </>
@@ -553,7 +682,7 @@ function App() {
             <p>Try lowering the minimum rating filter or rate more images first.</p>
             <p className="total-images">Total images: {images.length}</p>
           </div>
-                ) : (
+                ) : selectedMode === 'rating' ? (
           <div className="fullscreen-interface">
             {/* Fullscreen Background Image */}
             <div 
@@ -628,7 +757,40 @@ function App() {
 
 
           </div>
-        )}
+        ) : selectedMode === 'ranking' && !rankingResults ? (
+          <RankingInterface
+            images={images}
+            onComplete={handleRankingComplete}
+            onProgressSave={handleRankingProgressSave}
+            initialSession={initialRankingSession}
+          />
+        ) : rankingResults ? (
+          <RankingResults
+            rankings={rankingResults}
+            onImageSelect={setSelectedRankingImageIndex}
+            selectedImageIndex={selectedRankingImageIndex}
+            onDownload={() => {
+              if (rankingResults) {
+                const results = rankingResults.reduce((acc, result) => {
+                  acc[result.image.path] = {
+                    rank: result.rank,
+                    score: result.score,
+                    comparisons: 0 // This will be calculated properly in the ranking algorithm
+                  };
+                  return acc;
+                }, {} as { [imagePath: string]: { rank: number; score: number; comparisons: number } });
+                
+                const baseFileName = zipFileName ? 
+                  zipFileName.replace('.zip', '') : 
+                  'image-rankings';
+                const fileName = `${baseFileName}-ranking-results.json`;
+                
+                downloadRankingResults(results, fileName);
+              }
+            }}
+            onStartNew={handleStartNewSession}
+          />
+        ) : null}
       </main>
       
       {/* Settings Modal */}
